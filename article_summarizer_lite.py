@@ -11,45 +11,88 @@ class ArticleSummarizer:
     def __init__(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
     
     def fetch_article(self, url: str, timeout: int = 10) -> Optional[Dict[str, str]]:
         try:
+            print(f"  📡 URL 요청 중...")
             response = requests.get(url, headers=self.headers, timeout=timeout)
             response.raise_for_status()
+            print(f"  ✓ 응답 받음 (상태: {response.status_code})")
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # 제목 추출
+            # 제목 추출 - 더 넓은 범위로 검색
             title = None
-            for selector in ['h1', 'h2.title', '.article-title', 'meta[property="og:title"]']:
+            title_selectors = [
+                'h1',  # 가장 흔한 제목 태그
+                'h2',  # 부제목으로도 사용
+                '.article-title',
+                '.news-title',
+                '.title',
+                'meta[property="og:title"]',
+                'meta[name="title"]'
+            ]
+            
+            for selector in title_selectors:
                 element = soup.select_one(selector)
                 if element:
                     title = element.get('content') if element.name == 'meta' else element.get_text(strip=True)
-                    break
+                    if title and len(title) > 5:  # 최소 길이 체크
+                        print(f"  ✓ 제목 찾음 (선택자: {selector}): {title[:50]}...")
+                        break
             
-            # 본문 추출
+            if not title:
+                print(f"  ✗ 제목을 찾을 수 없습니다")
+                print(f"  🔍 시도한 선택자: {title_selectors}")
+                return None
+            
+            # 본문 추출 - 더 넓은 범위로 검색
             content = None
-            for selector in ['article', '.article-body', '.news-content', '#article-view-content-div']:
+            content_selectors = [
+                'article',
+                '.article-body',
+                '.news-content',
+                '.article-content',
+                '#article-view-content-div',
+                '.view-content',
+                '.article_view'
+            ]
+            
+            for selector in content_selectors:
                 element = soup.select_one(selector)
                 if element:
-                    for tag in element.find_all(['script', 'style', 'nav', 'aside']):
+                    # 불필요한 태그 제거
+                    for tag in element.find_all(['script', 'style', 'nav', 'aside', 'header', 'footer']):
                         tag.decompose()
                     content = element.get_text(strip=True, separator='\n')
-                    break
+                    if content and len(content) > 100:  # 최소 길이 체크
+                        print(f"  ✓ 본문 찾음 (선택자: {selector}): {len(content)}자")
+                        break
             
-            if not content:
+            # 본문 못 찾으면 p 태그 모두 수집
+            if not content or len(content) < 100:
+                print(f"  ⚠️ 선택자로 본문 못 찾음, p 태그 수집 시도...")
                 paragraphs = soup.find_all('p')
                 content = '\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
+                if content:
+                    print(f"  ✓ p 태그로 본문 수집: {len(content)}자")
             
-            if title and content:
-                return {'title': title, 'content': content}
+            if not content or len(content) < 50:
+                print(f"  ✗ 본문을 찾을 수 없거나 너무 짧습니다 ({len(content) if content else 0}자)")
+                return None
             
+            print(f"  ✅ 기사 수집 성공!")
+            return {'title': title, 'content': content}
+            
+        except requests.exceptions.RequestException as e:
+            print(f"  ❌ 네트워크 에러: {e}")
             return None
-            
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            print(f"  ❌ 예상치 못한 에러: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def summarize_article(self, title: str, content: str) -> str:
@@ -72,6 +115,7 @@ class ArticleSummarizer:
 
 요약:"""
             
+            print(f"  🤖 Claude API 호출 중...")
             message = self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=500,
@@ -80,10 +124,12 @@ class ArticleSummarizer:
                 ]
             )
             
-            return message.content[0].text.strip()
+            summary = message.content[0].text.strip()
+            print(f"  ✓ 요약 완료: {summary[:50]}...")
+            return summary
             
         except Exception as e:
-            print(f"Error summarizing article: {e}")
+            print(f"  ❌ 요약 에러: {e}")
             return "요약 실패"
     
     def process_urls(self, urls: List[str], output_file: str = "articles_summary.csv", 
@@ -91,7 +137,8 @@ class ArticleSummarizer:
         results = []
         total = len(urls)
         
-        print(f"총 {total}개 기사 처리 시작...")
+        print(f"📰 총 {total}개 기사 처리 시작...")
+        print(f"=" * 80)
         
         for idx, url in enumerate(urls, 1):
             print(f"\n[{idx}/{total}] 처리 중: {url}")
@@ -99,9 +146,7 @@ class ArticleSummarizer:
             article = self.fetch_article(url)
             
             if article:
-                print(f"  ✓ 기사 수집 완료: {article['title'][:50]}...")
                 summary = self.summarize_article(article['title'], article['content'])
-                print(f"  ✓ 요약 완료")
                 
                 results.append({
                     'URL': url,
@@ -111,7 +156,6 @@ class ArticleSummarizer:
                     '상태': '성공'
                 })
             else:
-                print(f"  ✗ 기사 수집 실패")
                 results.append({
                     'URL': url,
                     '제목': '',
@@ -125,7 +169,7 @@ class ArticleSummarizer:
                 self._save_csv(results, output_file)
                 success = sum(1 for r in results if r['상태'] == '성공')
                 fail = sum(1 for r in results if r['상태'] == '실패')
-                print(f"\n>>> 진행상황 저장: {idx}/{total} (성공: {success}, 실패: {fail})")
+                print(f"\n💾 진행상황 저장: {idx}/{total} (성공: {success}, 실패: {fail})")
             
             if idx < total:
                 time.sleep(delay)
@@ -134,11 +178,13 @@ class ArticleSummarizer:
         success = sum(1 for r in results if r['상태'] == '성공')
         fail = sum(1 for r in results if r['상태'] == '실패')
         
-        print(f"\n\n완료! 총 {len(results)}개 처리됨")
-        print(f"결과 파일: {output_file}")
+        print(f"\n{'=' * 80}")
+        print(f"🎉 완료! 총 {len(results)}개 처리됨")
+        print(f"💾 결과 파일: {output_file}")
         print(f"\n=== 처리 결과 통계 ===")
-        print(f"성공: {success}개")
-        print(f"실패: {fail}개")
+        print(f"✅ 성공: {success}개")
+        print(f"❌ 실패: {fail}개")
+        print(f"{'=' * 80}")
     
     def _save_csv(self, results: List[Dict], output_file: str):
         """CSV 저장 (pandas 없이)"""
