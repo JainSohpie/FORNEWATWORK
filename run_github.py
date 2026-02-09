@@ -1,6 +1,6 @@
 import os
 import sys
-from article_summarizer_lite import ArticleSummarizer
+from article_summarizer_debug import ArticleSummarizer
 
 # ========================================
 # 1. API 키 로드 (환경변수 또는 직접 입력)
